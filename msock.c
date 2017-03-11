@@ -29,6 +29,31 @@
 #include "ares_nowarn.h"
 
 
+#include <inttypes.h>
+#include <errno.h>
+#include <string.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <assert.h>
+#include <sys/time.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+
+  struct ip_mreqn {
+                      struct in_addr imr_multiaddr; /* IP multicast group
+                                                       address */
+                      struct in_addr imr_address;   /* IP address of local
+                                                       interface */
+                      int            imr_ifindex;   /* interface index */
+                  };
+
+
+
 struct ares_socket_functions mcast_socket_io;
 
 static ares_socket_t open_mcast_socket(int af, int type, int protocol, void * sock_func_cb_data)
@@ -38,6 +63,71 @@ static ares_socket_t open_mcast_socket(int af, int type, int protocol, void * so
   // TODO: join multicast group
   fprintf(stdout, "Enter %s:%s\n", __FILE__, __func__);
   return socket(af, type, protocol);
+
+  struct ip_mreqn mreq;
+  struct sockaddr_in sa;
+  int sockfd = -1;
+
+  sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (sockfd < 0 )
+    {
+    fprintf(stderr, "socket() failed: %s\n", strerror(errno));      
+    goto open_socket_failed;
+    }
+
+  flag = 1;  
+  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag)) < 0) 
+    {
+      fprintf(stderr, "setsockopt() - SO_REUSEADDR failed: %s\n", strerror(errno));
+      goto open_socket_failed;
+    }
+
+  memset(&sa, 0, sizeof(sockaddr_in));
+  sa.sin_family = AF_INET;
+  sa.sin_port= htons(5353);
+  sa.sin_addr = inet_addr("224.0.0.251");
+
+  if (bind(fd, (struct sockaddr*) &sa, sizeof(sa)) < 0) 
+    {
+      fprintf(stderr, "bind() failed: %s\n", strerror(errno));
+      goto open_socket_failed;
+    }
+
+  memset(&mreq, 0, sizeof(mreq));
+  mreq.imr_multiaddr = sa.sin_addr;
+  mreq.imr_address = htonl(INADDR_ANY);
+  mreq.imr.ifindex = if_nametoindex("eth0");
+
+  if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) 
+    {
+      fprintf(stderr, "IP_ADD_MEMBERSHIP failed: %s\n", strerror(errno));
+      goto open_socket_failed;
+    }
+
+  ttl = 1;
+  if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0)
+    {
+      fprintf(stderr, "setsockopt - IP_MULTICAST_TTL failed: %s\n", strerror(errno));
+      goto open_socket_failed;      
+    }
+
+  if (set_cloexec(sockfd) < 0) 
+    {
+      fprintf(stderr, "FD_CLOEXEC failed: %s\n", strerror(errno));
+      goto open_socket_failed;
+    }
+  
+  if (set_nonblock(sockfd) < 0) 
+    {
+      fprintf(stderr, "O_ONONBLOCK failed: %s\n", strerror(errno));
+      goto open_socket_failed;
+    }
+
+  open_socket_failed:
+    if (sockfd > 0) 
+      close(sockfd);
+
+    return -1;
 }
 
 

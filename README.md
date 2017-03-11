@@ -20,6 +20,7 @@ mDNS browse using c-ares
 
    ```
    $ cd c-ares
+   $ autoreconf -iv
    $ ./configure --disable-symbol-hiding
    ```
 3. Make in the root directory
