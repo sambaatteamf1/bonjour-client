@@ -44,15 +44,6 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 
-  struct ip_mreqn {
-                      struct in_addr imr_multiaddr; /* IP multicast group
-                                                       address */
-                      struct in_addr imr_address;   /* IP address of local
-                                                       interface */
-                      int            imr_ifindex;   /* interface index */
-                  };
-
-
 
 struct ares_socket_functions mcast_socket_io;
 
@@ -64,6 +55,7 @@ static ares_socket_t open_mcast_socket(int af, int type, int protocol, void * so
   fprintf(stdout, "Enter %s:%s\n", __FILE__, __func__);
   return socket(af, type, protocol);
 
+#if 0
   struct ip_mreqn mreq;
   struct sockaddr_in sa;
   int sockfd = -1;
@@ -128,6 +120,7 @@ static ares_socket_t open_mcast_socket(int af, int type, int protocol, void * so
       close(sockfd);
 
     return -1;
+#endif    
 }
 
 
