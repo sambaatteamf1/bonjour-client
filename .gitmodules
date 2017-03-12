@@ -1,3 +1,6 @@
 [submodule "c-ares"]
 	path = c-ares
 	url = git@github.com:c-ares/c-ares.git
+[submodule "uthash"]
+	path = uthash
+	url = https://github.com/troydhanson/uthash.git
