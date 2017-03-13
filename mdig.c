@@ -42,6 +42,7 @@
 #include "ares_dns.h"
 #include "ares_getopt.h"
 #include "ares_nowarn.h"
+#include "ares_private.h"
 
 #ifndef HAVE_STRDUP
 #  include "ares_strdup.h"
@@ -83,7 +84,6 @@
 #ifndef T_DNSKEY
 #  define T_DNSKEY  48 /* DNS Public Key (RFC4034) */
 #endif
-
 
 struct nv {
   const char *name;
@@ -165,6 +165,11 @@ static const char *rcodes[] = {
   "(unknown)", "(unknown)", "(unknown)", "(unknown)", "NOCHANGE"
 };
 
+
+// #define SERVICE_RR "_services._dns-sd._udp.local"
+#define SERVICE_RR "_bizcloud-device-server._tcp.local"
+#define MDNS_MCAST_ADDR "224.0.0.251"
+
 static void callback(void *arg, int status, int timeouts,
                      unsigned char *abuf, int alen);
 static const unsigned char *display_question(const unsigned char *aptr,
@@ -174,27 +179,22 @@ static const unsigned char *display_rr(const unsigned char *aptr,
                                        const unsigned char *abuf, int alen);
 static const char *type_name(int type);
 static const char *class_name(int dnsclass);
-static void usage(void);
 static void destroy_addr_list(struct ares_addr_node *head);
 static void append_addr_list(struct ares_addr_node **head,
                              struct ares_addr_node *node);
+static void tf1_ares_process(ares_channel channel, fd_set *read_fds, fd_set *write_fds);
+extern struct ares_socket_functions * get_mcast_io_funcs();
 
 int main(int argc, char **argv)
 {
   ares_channel channel;
-  int c, i, optmask = ARES_OPT_FLAGS, dnsclass = C_IN, type = T_A;
+  int optmask = ARES_OPT_FLAGS, dnsclass = C_IN, type = T_PTR;
   int status, nfds, count;
   struct ares_options options;
-  struct hostent *hostent;
   fd_set read_fds, write_fds;
   struct timeval *tvp, tv;
   struct ares_addr_node *srvr, *servers = NULL;
-
-#ifdef USE_WINSOCK
-  WORD wVersionRequested = MAKEWORD(USE_WINSOCK,USE_WINSOCK);
-  WSADATA wsaData;
-  WSAStartup(wVersionRequested, &wsaData);
-#endif
+  const struct ares_socket_functions * mcast_io_handle = get_mcast_io_funcs();    
 
   status = ares_library_init(ARES_LIB_INIT_ALL);
   if (status != ARES_SUCCESS)
@@ -206,133 +206,26 @@ int main(int argc, char **argv)
   options.flags = ARES_FLAG_NOCHECKRESP;
   options.servers = NULL;
   options.nservers = 0;
-  while ((c = ares_getopt(argc, argv, "df:s:c:t:T:U:")) != -1)
+  options.udp_port = 5353;
+  optmask |= (ARES_OPT_UDP_PORT|ARES_OPT_SERVERS);  
+  
+  /* User-specified name servers override default ones. */
+  srvr = malloc(sizeof(struct ares_addr_node));
+  if (!srvr)
     {
-      switch (c)
-        {
-        case 'd':
-#ifdef WATT32
-          dbug_init();
-#endif
-          break;
-
-        case 'f':
-          /* Add a flag. */
-          for (i = 0; i < nflags; i++)
-            {
-              if (strcmp(flags[i].name, optarg) == 0)
-                break;
-            }
-          if (i < nflags)
-            options.flags |= flags[i].value;
-          else
-            usage();
-          break;
-
-        case 's':
-          /* User-specified name servers override default ones. */
-          srvr = malloc(sizeof(struct ares_addr_node));
-          if (!srvr)
-            {
-              fprintf(stderr, "Out of memory!\n");
-              destroy_addr_list(servers);
-              return 1;
-            }
-          append_addr_list(&servers, srvr);
-          if (ares_inet_pton(AF_INET, optarg, &srvr->addr.addr4) > 0)
-            srvr->family = AF_INET;
-          else if (ares_inet_pton(AF_INET6, optarg, &srvr->addr.addr6) > 0)
-            srvr->family = AF_INET6;
-          else
-            {
-              hostent = gethostbyname(optarg);
-              if (!hostent)
-                {
-                  fprintf(stderr, "adig: server %s not found.\n", optarg);
-                  destroy_addr_list(servers);
-                  return 1;
-                }
-              switch (hostent->h_addrtype)
-                {
-                  case AF_INET:
-                    srvr->family = AF_INET;
-                    memcpy(&srvr->addr.addr4, hostent->h_addr,
-                           sizeof(srvr->addr.addr4));
-                    break;
-                  case AF_INET6:
-                    srvr->family = AF_INET6;
-                    memcpy(&srvr->addr.addr6, hostent->h_addr,
-                           sizeof(srvr->addr.addr6));
-                    break;
-                  default:
-                    fprintf(stderr,
-                      "adig: server %s unsupported address family.\n", optarg);
-                    destroy_addr_list(servers);
-                    return 1;
-                }
-            }
-          /* Notice that calling ares_init_options() without servers in the
-           * options struct and with ARES_OPT_SERVERS set simultaneously in
-           * the options mask, results in an initialization with no servers.
-           * When alternative name servers have been specified these are set
-           * later calling ares_set_servers() overriding any existing server
-           * configuration. To prevent initial configuration with default
-           * servers that will be discarded later, ARES_OPT_SERVERS is set.
-           * If this flag is not set here the result shall be the same but
-           * ares_init_options() will do needless work. */
-          optmask |= ARES_OPT_SERVERS;
-          break;
-
-        case 'c':
-          /* Set the query class. */
-          for (i = 0; i < nclasses; i++)
-            {
-              if (strcasecmp(classes[i].name, optarg) == 0)
-                break;
-            }
-          if (i < nclasses)
-            dnsclass = classes[i].value;
-          else
-            usage();
-          break;
-
-        case 't':
-          /* Set the query type. */
-          for (i = 0; i < ntypes; i++)
-            {
-              if (strcasecmp(types[i].name, optarg) == 0)
-                break;
-            }
-          if (i < ntypes)
-            type = types[i].value;
-          else
-            usage();
-          break;
-
-        case 'T':
-          /* Set the TCP port number. */
-          if (!ISDIGIT(*optarg))
-            usage();
-          options.tcp_port = (unsigned short)strtol(optarg, NULL, 0);
-          optmask |= ARES_OPT_TCP_PORT;
-          break;
-
-        case 'U':
-          /* Set the UDP port number. */
-          if (!ISDIGIT(*optarg))
-            usage();
-          options.udp_port = (unsigned short)strtol(optarg, NULL, 0);
-          optmask |= ARES_OPT_UDP_PORT;
-          break;
-        }
+      fprintf(stderr, "Out of memory!\n");
+      destroy_addr_list(servers);
+      return 1;
     }
-  argc -= optind;
-  argv += optind;
-  if (argc == 0)
-    usage();
+
+  srvr->family = AF_INET;    
+  append_addr_list(&servers, srvr);
+  if (ares_inet_pton(AF_INET, MDNS_MCAST_ADDR, &srvr->addr.addr4) == 0)
+    {
+      return 1;
+    }
 
   status = ares_init_options(&channel, &options, optmask);
-
   if (status != ARES_SUCCESS)
     {
       fprintf(stderr, "ares_init_options: %s\n",
@@ -340,39 +233,18 @@ int main(int argc, char **argv)
       return 1;
     }
 
-#ifdef TF1_MCAST_SUPPORT
-  {
-    extern struct ares_socket_functions * get_mcast_io_funcs();
-    const struct ares_socket_functions * mcast_io_handle = get_mcast_io_funcs();
-
-    ares_set_socket_functions(channel, mcast_io_handle, (void *)NULL);    
-  }
-#endif
-
-  if(servers)
+  ares_set_socket_functions(channel, mcast_io_handle, (void *)NULL);    
+  
+  status = ares_set_servers(channel, servers);
+  destroy_addr_list(servers);
+  if (status != ARES_SUCCESS)
     {
-      status = ares_set_servers(channel, servers);
-      destroy_addr_list(servers);
-      if (status != ARES_SUCCESS)
-        {
-          fprintf(stderr, "ares_init_options: %s\n",
-                  ares_strerror(status));
-          return 1;
-        }
+      fprintf(stderr, "ares_init_options: %s\n",
+              ares_strerror(status));
+      return 1;
     }
 
-  /* Initiate the queries, one per command-line argument.  If there is
-   * only one query to do, supply NULL as the callback argument;
-   * otherwise, supply the query name as an argument so we can
-   * distinguish responses for the user when printing them out.
-   */
-  if (argc == 1)
-    ares_query(channel, *argv, dnsclass, type, callback, (char *) NULL);
-  else
-    {
-      for (; *argv; argv++)
-        ares_query(channel, *argv, dnsclass, type, callback, *argv);
-    }
+  ares_query(channel, SERVICE_RR, dnsclass, type, callback, SERVICE_RR);
 
   /* Wait for all queries to complete. */
   for (;;)
@@ -389,18 +261,50 @@ int main(int argc, char **argv)
           printf("select fail: %d", status);
           return 1;
         }
-      ares_process(channel, &read_fds, &write_fds);
+
+      tf1_ares_process(channel, &read_fds, &write_fds);
     }
 
   ares_destroy(channel);
 
   ares_library_cleanup();
 
-#ifdef USE_WINSOCK
-  WSACleanup();
-#endif
-
   return 0;
+}
+
+static void tf1_ares_process(ares_channel channel, fd_set *read_fds, fd_set *write_fds)
+{
+  
+  struct server_state *server;
+  ssize_t count;
+  unsigned char buf[4096];
+  union {
+    struct sockaddr     sa;
+    struct sockaddr_in  sa4;
+  } from;
+  ares_socklen_t fromlen;
+
+  /* Make sure the server has a socket and is selected in read_fds. */
+  server = &channel->servers[0];
+
+  if (server->udp_socket == ARES_SOCKET_BAD || server->is_broken)
+    return;
+
+  if(!read_fds) 
+    return;
+  
+  if(!FD_ISSET(server->udp_socket, read_fds))
+    return;
+  
+  fromlen = sizeof(from.sa4);
+
+  count = channel->sock_funcs->arecvfrom(server->udp_socket, buf, 
+                                        sizeof(buf), 0, &from.sa, &fromlen, 
+                                        channel->sock_func_cb_data);
+
+  fprintf(stdout, "Received response from: %s\n",  inet_ntoa(from.sa4.sin_addr));
+
+  callback(SERVICE_RR, ARES_SUCCESS, 0, buf, count);
 }
 
 static void callback(void *arg, int status, int timeouts,
@@ -445,6 +349,8 @@ static void callback(void *arg, int status, int timeouts,
   nscount = DNS_HEADER_NSCOUNT(abuf);
   arcount = DNS_HEADER_ARCOUNT(abuf);
 
+  printf("ancount:%d\n", ancount);
+  
   /* Display the answer header. */
   printf("id: %d\n", id);
   printf("flags: %s%s%s%s%s\n",
@@ -801,13 +707,6 @@ static const char *class_name(int dnsclass)
         return classes[i].name;
     }
   return "(unknown)";
-}
-
-static void usage(void)
-{
-  fprintf(stderr, "usage: adig [-f flag] [-s server] [-c class] "
-          "[-t type] [-p port] name ...\n");
-  exit(1);
 }
 
 static void destroy_addr_list(struct ares_addr_node *head)
