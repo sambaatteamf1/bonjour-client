@@ -167,7 +167,7 @@ static const char *rcodes[] = {
 
 
 // #define SERVICE_RR "_services._dns-sd._udp.local"
-#define SERVICE_RR "_bizcloud-device-server._tcp.local"
+#define SERVICE_RR "bizcloud-controller.local"
 #define MDNS_MCAST_ADDR "224.0.0.251"
 
 static void callback(void *arg, int status, int timeouts,
@@ -188,7 +188,7 @@ extern struct ares_socket_functions * get_mcast_io_funcs();
 int main(int argc, char **argv)
 {
   ares_channel channel;
-  int optmask = ARES_OPT_FLAGS, dnsclass = C_IN, type = T_PTR;
+  int optmask = ARES_OPT_FLAGS, dnsclass = C_IN, type = T_A;
   int status, nfds, count;
   struct ares_options options;
   fd_set read_fds, write_fds;
@@ -350,7 +350,7 @@ static void callback(void *arg, int status, int timeouts,
   arcount = DNS_HEADER_ARCOUNT(abuf);
 
   printf("ancount:%d\n", ancount);
-  
+
   /* Display the answer header. */
   printf("id: %d\n", id);
   printf("flags: %s%s%s%s%s\n",
